@@ -1,1 +1,6 @@
-
+For the mini-project, we created Python code a3_mp.py
+this code uses openCV to detect an aruco marker 
+The location of the center of the marker is then detected 
+After finding the center of the maker, the quadrant it is in is detected 
+each quadrant is related to an integer 
+The integer is sent to the Arduino 
