@@ -22,23 +22,24 @@ bus = SMBus(1)
 
 #Initialize camera
 camera = cv2.VideoCapture(0)
+sleep(0.1) #Sleep to allow cam to initialize
 
-#Aruco detection
+#Aruco detection dictionary and params setup
 aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_6X6_50)
 parameters = aruco.DetectorParameters()
-sleep(0.1)
+
 
 camheight = 480
 camwidth = 640
 
 def find_center_of_corner(corner):
-	for vector in corner:
+	for vector in corner: #Find the center of 4 vectors by averaging the coordinates of the vectors.
 		xavg = (vector[0, 0] + vector[1, 0] + vector[2, 0] + vector[3, 0])/4.0
 		yavg = (vector[0, 1] + vector[1, 1] + vector[2, 1] + vector[3, 1])/4.0
 		#print("X: ", xavg, " Y: ", yavg)
 		return [xavg, yavg]
 
-def send_int_to_arduino(value):
+def send_int_to_arduino(value): #Send an int to the arduino
     bus = smbus2.SMBus(1)   # Initializes I2C bus
     
     ARDUINO_ADDRESS = 0x04  # Address we set for Arduino
@@ -53,27 +54,27 @@ def send_int_to_arduino(value):
     else:
         print("Value out of byte range")
 
-
+#-----SUPERLOOP-----
 while True:
 	ret, image = camera.read()
 
 	if ret:
 		#COMP VIS STUFF
-		gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-		corners, ids, rejected = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
-		image = aruco.drawDetectedMarkers(image.copy(), corners, ids)
-		cv2.imshow("Image", image)
+		gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) #convert to gray for computer vision processing
+		corners, ids, rejected = aruco.detectMarkers(gray, aruco_dict, parameters=parameters) #detect aruco markers
+		image = aruco.drawDetectedMarkers(image.copy(), corners, ids) #Draw boxes around detected markers
+		cv2.imshow("Image", image) #Draw the image
 		
 
-		if corners:
-			center = find_center_of_corner(corners[0])
-			center_w = [center[0] - (camwidth/2), -(center[1] - (camheight/2))]
-			xneg = (np.sign(center_w[0]) == -1)		
-			yneg = (np.sign(center_w[1]) == -1)
-			xpos = not xneg
+		if corners: #if atleast 1 aruco marker detected 
+			center = find_center_of_corner(corners[0]) 
+			center_w = [center[0] - (camwidth/2), -(center[1] - (camheight/2))] #Determine the center of the aruco in relation to center of image
+			xneg = (np.sign(center_w[0]) == -1)		# Determine x sign
+			yneg = (np.sign(center_w[1]) == -1)     # Determine y sign
+			xpos = not xneg #invert to make next part easier
 			ypos = not yneg
-			result = -1
-			if (xpos and ypos):
+			result = -1 #Default
+			if (xpos and ypos): #Determine resulting quadrant(0 is upper right, continues clockwise)
 				result = 0
 			if (xpos and yneg):
 				result = 1
@@ -82,12 +83,12 @@ while True:
 			if (xneg and ypos):
 				result = 3
 			print(result)
-			send_int_to_arduino(result)
-			lcd.message = str(result)
+			send_int_to_arduino(result) #Send location to arduino
+			lcd.message = str(result) #Set LCD message
 			
 	
 
-
+        #DEPRECATED
 		# print("Image dimensions: ", image.shape)
 		#[left, right] = np.split(image, 2, axis=1)
 		#[upperleft, lowerleft] = np.split(left, 2, axis=0)
@@ -110,11 +111,11 @@ while True:
 		#cv2.imshow("Lower right", lowerright)
 
 		
-		if cv2.waitKey(1) & 0xFF == ord('q'):
+		if cv2.waitKey(1) & 0xFF == ord('q'): #Key to kill imshow window
 			break
 	else:
 		print("ERROR, CAMERA FEED FAILED")
 		quit()
-camera.release()
-cv2.destroyAllWindows()
+camera.release() #Release camera
+cv2.destroyAllWindows() #Destroy display windows
 
