@@ -1,1 +1,5 @@
+Demo 2 is the implementation of a computer-vision-controlled rover. 
 
+This project had 2 demonstrations
+1. The robot needed to find a beacon and drive up to it stopping within 1 foot. 
+2. The robot needed to find the beacon drive within 1 foot of it and complete a circle around it. 
