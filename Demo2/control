@@ -1,0 +1,642 @@
+// Robert Christian and Matias Samora-Zappanti
+// Demo 2 Code
+// Compiled from previous projects and individual Arduino code files. 
+
+
+
+//OVERARCHING VARIABLES:
+const float pi = 3.1415926;
+const double b = 0.291; // Distance between the wheels.
+const double wheel_radius = 0.075; // Radius of each wheel. 
+const double counts_over_radians = (3200.0 / 6.283185); // Helps convert counts to radians.
+const int desired_Ts_ms = 10; // The desired sample time, we have set to 10 milliseconds.
+const float Battery_Voltage = 7.8; // Max voltage of the battery.
+
+const int Cosmo_InterruptClk_Pin = 0; // These are the pins associated with each wheel.
+const int Wanda_InterruptClk_Pin = 1;
+const int Cosmo_EncoderClk_Pin = 2;
+const int Wanda_EncoderClk_Pin = 3;
+const int Wheel_Enable_Pin = 4;
+const int Cosmo_EncoderDt_Pin = 5;
+const int Wanda_EncoderDt_Pin = 6;
+const int Cosmo_Direction_Pin = 7;
+const int Wanda_Direction_Pin = 8;
+const int Cosmo_PWM_Pin = 9;
+const int Wanda_PWM_Pin = 10;
+const int LED_PIN = 13;
+
+volatile int Cosmo_ClkStatus; // ClkStatus, DtStatus, and LastClkStatus variables setup.
+volatile int Cosmo_DtStatus;
+volatile int Cosmo_LastClk_Status;
+volatile int Wanda_ClkStatus;
+volatile int Wanda_DtStatus;
+volatile int Wanda_LastClk_Status;
+
+volatile double Cosmo_Count = 0; // # of forward counts for both wheels. 
+volatile double Wanda_Count = 0; 
+
+volatile float Wanda_rads_per_s = 0.0000; // Variables for tracking current speed/counts.
+volatile float Cosmo_rads_per_s = 0.0000;
+
+volatile double Cosmo_LastSampleCount; // Tracks how many counts have passed since last sample. 
+volatile double Wanda_LastSampleCount;
+
+volatile float Cosmo_desired_speed = 0.0; // Desired speed variables for each wheel. 
+volatile float Wanda_desired_speed = 0.0;
+
+volatile float Cosmo_Voltage = 0.0000; // The voltage variables to be sent to the PWM's. 
+volatile float Wanda_Voltage = 0.0000;
+
+unsigned int Cosmo_PWM = 0; // The variables to track the PWM output of the pins. 
+unsigned int Wanda_PWM = 0;
+
+volatile double current_time = 0.000; // These three are used for time math. 
+volatile double last_time_ms;
+volatile double freeze_start_time = 0.000; // Time since we entered a given FREEZE state. 
+volatile int time_since_last_sample;
+
+volatile double x_pos; // The position variables, and their last-sample versions.
+volatile double y_pos;
+volatile double theta_pos_current;
+volatile double x_old;
+volatile double y_old;
+volatile double theta_pos_old;
+
+
+
+// RPI VARIABLES:
+#include <Wire.h>
+const int SLAVE_ADDRESS = 0x04;
+volatile bool arucoDetected = 0; // BINARY YES OR NO FOR DETECTING INPUT FROM THE RPI. (this may change when implementing the RPI into the arduino.)
+volatile double arucoAngle = (0.000); // ANGLE VALUE PASSED FROM THE RPI TO THE ARDUINO. (currently, pi/2 is a stand-in value.)
+volatile double arucoDistance = (0.000); // DISTANCE VALUE PASSED FROM THE RPI TO THE ARDUINO, IN METERS!!! (currently, 5/whatever is 5 feet converted into meters)
+volatile double lastDetectedAngle = 1;
+
+
+
+// SPIN VARIABLES:
+volatile double THETA_DESIRED_TA; // Desired angle value to spin to.
+volatile double theta_error; // Difference between current angle and desired angle. 
+
+double theta_speed_desired; // Speed variables for turning. 
+double theta_speed_current; 
+double theta_speed_error;
+
+const float K_theta_spin = 6.000; // Higher value makes it spin faster.
+const float Ki_Kp_spin_ratio = 0.400 ; // Amount of Ki vs. Kp. 0 is absolute proportional, 1 is absolute integral.
+float Kp_spin = (1.000 - Ki_Kp_spin_ratio); // Too much Kp makes him not strong enough.
+float Ki_spin = (Ki_Kp_spin_ratio); // Too much Ki can make him slip and shake. 
+
+volatile double Cosmo_spin_error = 0.000; // The errors and integral portions of the spin controller.
+volatile double Cosmo_Spin_Int = 0.000;
+volatile double Wanda_spin_error = 0.000;
+volatile double Wanda_Spin_Int = 0.000;
+
+
+
+// DRIVE VARIABLES:
+volatile double dist_to_go; // Variables for figuring out how far he has to go. 
+volatile double x_desired;
+volatile double y_desired;
+volatile double x_to_go;
+volatile double y_to_go;
+
+volatile double x_start; // The start points for any run.
+volatile double y_start;
+volatile double dist_gone; // Distance gone so far. 
+
+volatile double pos_speed_desired = 0.0000; // Some speed variables for driving. 
+volatile double pos_speed_error = 0.0000;
+volatile double pos_speed_current = 0.0000;
+
+volatile double K_pos = 6.000; // See above explanations of K values for spin; these are the same but for drive. 
+volatile double Ki_Kp_Pos_Ratio = 0.200;
+volatile double Kp_pos = (1.000 - Ki_Kp_Pos_Ratio); 
+volatile double Ki_pos = Ki_Kp_Pos_Ratio;
+volatile double Kd; // The entirety of the derivative controller. 
+
+volatile double Cosmo_pos_speed_error = 0.0000; // The errors and integral portions of the drive controller.
+volatile double Cosmo_pos_Int = 0.000;
+volatile double Wanda_pos_speed_error = 0.0000;
+volatile double Wanda_pos_Int = 0.000;
+
+
+
+// FREEZE VARIABLES:
+volatile double Cosmo_freeze_speed_error = 0.0000; // The errors and integral portions of the freeze controller.
+volatile double Cosmo_freeze_Int = 0.0000;
+volatile double Wanda_freeze_speed_error = 0.0000;
+volatile double Wanda_freeze_Int = 0.0000;
+
+volatile double Wanda_freeze; // Positions for where the wheels should freeze. 
+volatile double Cosmo_freeze;
+
+volatile double Kp_freeze = 1.000; // The Ki and Kp for the freeze controller. 
+volatile double Ki_freeze = 1.000;
+
+
+
+// STATE VARIABLES:
+const int IDLE_START =          1; // These are the state variables for what Timmy should be doing. 
+const int SPIN_DETECT =         2;
+const int FREEZE_CHECKANGLE =   3;
+const int SPIN_SETUP =          4;
+const int SPIN =                5;
+const int FREEZE_CHECKDIST =    6;
+const int DRIVE_SETUP =         7;
+const int DRIVE =               8;
+const int CIRCLE_SPIN_SETUP =   9;
+const int CIRCLE =              10;
+const int IDLE_FREEZE =         11;
+const int FREEZE_CHECK =        12; //state combo with angle and distance.
+volatile int Timmy_Status;
+volatile int lastState =        0;
+
+
+
+// OVERSHOOT VARIABLES
+volatile float spin_percent_extra; // These variables exist to compensate for slipping. 
+volatile float distance_percent_extra;
+
+
+
+// NEW CIRCLE VARIABLES
+volatile double radius; // Radius to circle around at. I have no idea what this should be. 
+volatile double Cosmo_radius_distance;
+volatile double Wanda_radius_distance;
+
+volatile double circle_speed;
+volatile double circle_error;
+volatile double circle_pos_desired;
+
+volatile double circle_speed_desired = 0.0000; // Some speed variables for driving. 
+volatile double circle_speed_error = 0.0000;
+volatile double circle_speed_current = 0.0000;
+
+volatile float K_circle = 5.000; // See above explanations of K values for spin; these are the same but for circle. 
+volatile float Ki_Kp_circle_Ratio = 0.300;
+volatile float Kp_circle = (1.000 - Ki_Kp_circle_Ratio); 
+volatile float Ki_circle = Ki_Kp_circle_Ratio;
+
+volatile double Cosmo_circle_error = 0.0000; // The errors and integral portions of the drive controller.
+volatile double Cosmo_circle_Int = 0.0000;
+volatile double Wanda_circle_error = 0.0000;
+volatile double Wanda_circle_Int = 0.0000;
+
+volatile double x_beacon;
+volatile double y_beacon;
+
+volatile float spin_detect_scalar = 1.000; //FIXME NEW CODE. exists to get it to spin back if necessary.
+volatile double start_detect_theta = 0.000;
+const double spindetectvoltage = 1.5;
+
+const float desired_distance = 0.350;
+
+
+
+void setup() {
+  // INPUTS: THESE WILL ALL GO AWAY ONCE WE START RUNNING. 
+  //THETA_DESIRED_TA = 1.000*pi;     // TA given distance to turn (in radians)
+  //radius = 1.000 + 1.000; // I HAVE NO IDEA WHAT THIS MEASUREMENT IS LMFAO LET'S FIND OUT i think it's in b/2's. 
+  
+  // OVERARCHING SETUP:
+  Timmy_Status = IDLE_START; // Timmy starts in the Idle_Start phase. 
+  
+  pinMode(Cosmo_PWM_Pin, OUTPUT); // Initializes directions and pwm pins as outputs, as well as the enable pin.
+  pinMode(Wanda_PWM_Pin, OUTPUT);
+  pinMode(Cosmo_Direction_Pin, OUTPUT);
+  pinMode(Wanda_Direction_Pin, OUTPUT);
+  pinMode(Wheel_Enable_Pin, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+
+  // Wire.begin(SLAVE_ADDRESS);  
+  // Wire.onReceive(receiveData);
+
+  digitalWrite(LED_PIN, HIGH); // Turns the LED on while we are setting up. 
+
+  digitalWrite(Cosmo_Direction_Pin, LOW); //LOW = FORWARD 
+  digitalWrite(Wanda_Direction_Pin, LOW); //LOW = FORWARD
+  digitalWrite(Wheel_Enable_Pin, HIGH); // HIGH = ON
+  
+  Cosmo_ClkStatus = digitalRead(Cosmo_EncoderClk_Pin); // Initializes status of Clk and Dt for Cosmo and Wanda and their last states as well. 
+  Cosmo_DtStatus = digitalRead(Cosmo_EncoderDt_Pin);
+  Cosmo_LastClk_Status = Cosmo_ClkStatus;
+  Wanda_ClkStatus = digitalRead(Wanda_EncoderClk_Pin);
+  Wanda_DtStatus = digitalRead(Wanda_EncoderDt_Pin);
+  Wanda_LastClk_Status = Wanda_ClkStatus;
+
+  Serial.begin(115200); // Starts monitor.
+  attachInterrupt(Cosmo_InterruptClk_Pin, Cosmo_ISR, CHANGE); // Sets up the interrupts below. 
+  attachInterrupt(Wanda_InterruptClk_Pin, Wanda_ISR, CHANGE);
+
+  last_time_ms = millis(); // Sets the last_time_ms variable to be right now. 
+  Wanda_LastSampleCount = 0; // Initializes the counts to be zero.
+  Cosmo_LastSampleCount = 0;
+  
+  x_pos = 0.000; // Initializes all of the positions.
+  y_pos = 0.000;
+  theta_pos_current = 0.000;
+  x_old = 0.000;
+  y_old = 0.000;
+  theta_pos_old = 0.000;
+    
+  freeze_start_time = millis(); // FIXME NEW CODE: makes it wait 2 seconds without delaying.
+  digitalWrite(Wheel_Enable_Pin, LOW); // FIXME NEW CODE: this effectively alters the idle_start layout.
+
+
+}
+
+void loop() {
+  current_time = millis();
+  //SERIAL RECEIVE DATA
+    
+  if(Serial.available()>0) {
+    String detectedString = Serial.readStringUntil('\n');
+    //Serial.println(detectedString);
+    arucoDetected = (detectedString[0] == '1');
+    int delim2index = detectedString.lastIndexOf(',');
+    arucoDistance = detectedString.substring(2, delim2index).toFloat() / 100.0f;
+    arucoAngle = detectedString.substring(delim2index + 1).toFloat();
+    arucoAngle = arucoAngle * (-1);
+  }
+
+  if (arucoDetected == 1) {
+    lastDetectedAngle = arucoAngle; // if we detected something, then the last angle we detected is here, but otherwise this doesn't update.
+  }
+    
+  // else { // FIXME NEW CODE: i have no idea if this will change anything.
+  //     arucoDetected = 0;
+  // }
+    
+    
+    
+ // Serial.println(arucoDetected);
+
+  switch(Timmy_Status) {
+    case IDLE_START:
+      digitalWrite(LED_PIN, HIGH);
+          
+      if (current_time > (freeze_start_time + 2000.0)) { //FIXME NEW CODE: I ADDED THIS WAY, IN CASE THE DELAY FUNCTION WAS MESSING WITH STUFF.
+          digitalWrite(Wheel_Enable_Pin, HIGH);
+          Timmy_Status = SPIN_DETECT;
+      }
+          
+      //delay(2000); //FIXME NEW CODE: I TOOK THIS OUT
+      
+      break;
+
+
+
+    case SPIN_DETECT:
+      digitalWrite(LED_PIN, LOW);
+      digitalWrite(Wheel_Enable_Pin, HIGH);
+      if (arucoDetected == 1) { // if we are detecting input from the RPI, 
+        Cosmo_Voltage = 0; // Stop spinning for rn. 
+        Wanda_Voltage = 0;
+        Cosmo_freeze = Cosmo_Count; // set a freeze position on both wheels
+        Wanda_freeze = Wanda_Count;
+        Timmy_Status = FREEZE_CHECK; // set next status and last status. 
+        start_detect_theta = 1.000;
+      }
+      else {
+        Cosmo_Voltage = spindetectvoltage * spin_detect_scalar; // if we aren't detecting RPI, keep spinning.
+        Wanda_Voltage = (-1) * spindetectvoltage * spin_detect_scalar;
+      }
+      if (lastState != SPIN_DETECT) {
+        start_detect_theta = theta_pos_current;
+      }
+      if ( ( abs(theta_pos_current - start_detect_theta) ) >= ( 2.000*pi ) ) {
+        spin_detect_scalar = spin_detect_scalar * (0.880);
+        start_detect_theta = theta_pos_current;
+      }
+      lastState = SPIN_DETECT;
+
+      break;
+
+
+
+    case SPIN_SETUP:
+      digitalWrite(LED_PIN, LOW);
+      THETA_DESIRED_TA = theta_pos_current + arucoAngle;  // ignore the fact that it's still called "_TA", the desired theta is the current theta + the input from the rpi./ 
+      //spin_percent_extra = 1.000 + (0.0150 * ( (pi/2.000) / (abs(arucoAngle) + 0.240) ) ); // some stuff that needs to be tuned. fixme
+      //THETA_DESIRED_TA = THETA_DESIRED_TA * spin_percent_extra;
+
+      Cosmo_Spin_Int = 0.000; 
+      Wanda_Spin_Int = 0.000;
+      Timmy_Status = SPIN; 
+      lastState = SPIN_SETUP;
+      break;
+
+
+
+
+    
+    case DRIVE_SETUP:
+      digitalWrite(LED_PIN, LOW); 
+      dist_to_go = ( arucoDistance - desired_distance ); // The RPI given distance away we are, but we want to stop 0.2 meters before. 
+      distance_percent_extra = 0.96264;
+      dist_to_go = dist_to_go * (distance_percent_extra); // Overshoot value to account for slipping. Tuned pretty good for now. 
+      
+      dist_gone = 0.000; // We haven't moved yet, so dist_gone should reinitialize to zero every run. 
+      x_start = x_pos; // Start position is current position before driving.
+      y_start = y_pos;
+ 
+      Kd = K_pos * (dist_to_go - dist_gone); // Helps correct slipping at the beginning. 
+
+      Cosmo_pos_Int = 0.000; // Reinitializes Integral portions of the controller to 0. 
+      Wanda_pos_Int = 0.000;
+      Timmy_Status = DRIVE; // The next phase is Drive. 
+      break;
+
+
+
+    case SPIN:
+      digitalWrite(LED_PIN, LOW);  
+      theta_error = THETA_DESIRED_TA - theta_pos_current; 
+      theta_speed_desired = K_theta_spin*(theta_error / abs(theta_error)) * min(0.6,abs(theta_error)); // Set desired speed proportional to that, at a max of Kp*0.5
+      theta_speed_error = theta_speed_desired - theta_speed_current; // Get error between desired speed and current speed.
+
+      if ( (abs(theta_error) < 0.005) && (abs(theta_speed_current) < 0.001) && (abs(Wanda_rads_per_s) < 0.01) && (abs(Cosmo_rads_per_s) < 0.01) ) {
+        theta_error = 0;
+        theta_speed_error = 0;
+        if (lastState == SPIN_SETUP) { //FIXME NEW CODE: changed from != circle_spin_setup to == spin_setup
+          Cosmo_freeze = Cosmo_Count;
+          Wanda_freeze = Wanda_Count;
+          Timmy_Status = FREEZE_CHECK;
+          lastState = SPIN;
+        }
+        else { // otherwise we just came from circle_spin_setup, and we should go back there next.
+          lastState = SPIN;
+          Timmy_Status = CIRCLE_SPIN_SETUP;
+        }
+      }
+
+      Cosmo_desired_speed = (theta_speed_error); // Set the wheel speeds to be the desired speeds (in opposite directions.)
+      Wanda_desired_speed = -1 * (theta_speed_error);
+
+      Cosmo_spin_error = Cosmo_desired_speed - Cosmo_rads_per_s; // Get the error between the desired and current speed for Cosmo and Wanda (the wheels)
+      Wanda_spin_error = Wanda_desired_speed - Wanda_rads_per_s; 
+
+      Cosmo_Voltage = (Kp_spin*Cosmo_spin_error) + Cosmo_Spin_Int; // Sets the voltage with PI (the I is set later)
+      Wanda_Voltage = (Kp_spin*Wanda_spin_error) + Wanda_Spin_Int;
+      break;
+
+
+
+    case DRIVE:
+      digitalWrite(LED_PIN, LOW);
+      dist_gone = sqrt( ((x_pos - x_start)*(x_pos - x_start)) + ((y_pos - y_start)*(y_pos - y_start)) ); // Figures out how far he has gone.  
+      pos_speed_desired = (K_pos * (dist_to_go - dist_gone)) - Kd; // Sets desired speed based on that. 
+      pos_speed_desired = min( pos_speed_desired, 10.000 ); // Sets a maximum speed at 5.  
+      pos_speed_error = pos_speed_desired - pos_speed_current; // Gets the error between the desired and the current speeds.
+
+      if ( ( (dist_to_go - dist_gone) < 0.01 ) && ( abs(pos_speed_current) < 0.005 ) && ( abs(Wanda_rads_per_s) < 0.01 ) && ( abs(Cosmo_rads_per_s) < 0.01 ) ) {
+        pos_speed_error = 0;
+        Cosmo_freeze = Cosmo_Count;
+        Wanda_freeze = Wanda_Count;
+        Timmy_Status = FREEZE_CHECK;
+        lastState = DRIVE;
+      }
+
+      Cosmo_desired_speed = pos_speed_desired * (1.010); // Sets the speed to the wheels. Cosmo runs a little slower, so we needed to boost him. 
+      Wanda_desired_speed = pos_speed_desired;
+
+      if ((Cosmo_rads_per_s - Wanda_rads_per_s) > 0) { Wanda_desired_speed = Wanda_desired_speed + (Cosmo_rads_per_s - Wanda_rads_per_s); } // If one wheel is faster, add the difference to the other wheel. 
+      else if ((Wanda_rads_per_s - Cosmo_rads_per_s) > 0) { Cosmo_desired_speed = Cosmo_desired_speed + (Wanda_rads_per_s - Cosmo_rads_per_s); } 
+
+      Cosmo_pos_speed_error = (Cosmo_desired_speed - Cosmo_rads_per_s); // Gets the difference between the desired and current speeds for the wheels. 
+      Wanda_pos_speed_error = (Wanda_desired_speed - Wanda_rads_per_s);
+
+      Cosmo_Voltage = (Kp_pos*Cosmo_pos_speed_error) + Cosmo_pos_Int; // Sets the voltage with PI (the I is set later) 
+      Wanda_Voltage = (Kp_pos*Wanda_pos_speed_error) + Wanda_pos_Int;
+      break;
+
+
+
+    case CIRCLE_SPIN_SETUP:
+      digitalWrite(LED_PIN, LOW);
+
+      if (lastState != SPIN) { // if we didn't just come in from Spin, 
+        radius = arucoDistance; // distance from the robot to the beacon. 
+        x_beacon = x_pos + ( radius * cos( theta_pos_current ) ); // sets the x and y positions of the beacon. fixme: idk if this works. pretty sure it does tho.
+        y_beacon = y_pos + ( radius * sin( theta_pos_current ) ); //FIXME NEW CODE: added parentheses. no idea if this will change anything.
+        
+        THETA_DESIRED_TA = theta_pos_current + ( (pi/2)*1.02000); // hardcoded value for pi overshoot lol? matias just figured this out, so hardcode it in here. FIXED. previously 1.032500
+        Cosmo_Spin_Int = 0.000;
+        Wanda_Spin_Int = 0.000;
+        Timmy_Status = SPIN;
+        lastState = CIRCLE_SPIN_SETUP; // yeah go spin 90 degrees now. 
+      }
+      if (lastState == SPIN) { // if we have spun 90 degrees.
+        radius = sqrt( ((x_beacon - x_pos)*(x_beacon - x_pos)) + ((y_beacon - y_pos)*(y_beacon - y_pos)) ); // re-solve for the radius since it could shift in the spinning process. 
+        radius = (radius * (2.000 / b) ); // this will convert it to b/2 units. yes, i have no clue why these are the units that we are working with, it's the only thing I know how to get working though.
+        circle_pos_desired = (-2.000 * pi * 1.03) + theta_pos_current; // this is a constant, that tells it to spin 2pi (we also drive at the same time, hence circle) 
+        Timmy_Status = CIRCLE;
+      }
+      break;
+
+
+
+    case CIRCLE:
+      digitalWrite(LED_PIN, LOW);
+
+      radius = sqrt( ((x_beacon - x_pos)*(x_beacon - x_pos)) + ((y_beacon - y_pos)*(y_beacon - y_pos)) ); // re-solve for the radius since it could shift in the spinning process.
+      radius = (radius * (2.000 / b) ); // this will convert it to b/2 units. 
+
+      
+      circle_error = (circle_pos_desired) - theta_pos_current; // error in angle it's pointing at. this is how we get it to go. 
+      circle_speed_desired = K_circle*(circle_error / abs(circle_error)) * min(0.6,abs(circle_error)); // Set desired speed proportional to that, at a max of K_circle*0.5
+      circle_speed_error = circle_speed_desired - circle_speed_current;
+
+      Cosmo_radius_distance = radius - 1; // cosmo is on the inside, and wanda is on the outside. 
+      Wanda_radius_distance = radius + 1;
+    
+      Cosmo_desired_speed = ( ( circle_speed_error ) + ( (-1) * circle_speed_error * radius) ); // previously this was also multiplied by 1.017
+//      Wanda_desired_speed = ( (-1) * circle_speed_error ) + ( (-1) * circle_speed_error * radius);
+      Wanda_desired_speed = Cosmo_desired_speed * (Wanda_radius_distance / Cosmo_radius_distance); // set cosmo's speed based on the other thing, then wanda's speed based on their radius differences and also cosmo's speed.
+
+      if ( Wanda_rads_per_s != (Cosmo_rads_per_s * (Wanda_radius_distance / Cosmo_radius_distance)) ) { // if Wanda is not currently going proportionally to cosmo
+        Wanda_desired_speed = Wanda_desired_speed + ( (Cosmo_rads_per_s * (Wanda_radius_distance / Cosmo_radius_distance)) - Wanda_rads_per_s ); // fix her speed proportionally to cosmo.
+      }
+      Cosmo_desired_speed = Cosmo_desired_speed * 1.010; // cosmo needs a little boost. 
+    
+      Cosmo_circle_error = Cosmo_desired_speed - Cosmo_rads_per_s;
+      Wanda_circle_error = Wanda_desired_speed - Wanda_rads_per_s;
+    
+      Cosmo_Voltage = (Kp_circle * Cosmo_circle_error) + Cosmo_circle_Int;
+      Wanda_Voltage = (Kp_circle * Wanda_circle_error) + Wanda_circle_Int;
+      
+
+      if ( (abs(circle_error) < 0.005) && (abs(circle_speed_current) < 0.001) && (abs(Wanda_rads_per_s) < 0.01) && (abs(Cosmo_rads_per_s) < 0.01) ) {
+        circle_error = 0;
+        circle_speed_error = 0;
+
+        Cosmo_freeze = Cosmo_Count;
+        Wanda_freeze = Wanda_Count;
+        Timmy_Status = IDLE_FREEZE;
+        lastState = CIRCLE;
+    
+      }
+
+      // Serial.print(circle_pos_desired);
+      // Serial.print("\t");
+      // Serial.print(theta_pos_current);
+      // Serial.print("\t");
+      // Serial.print(Cosmo_desired_speed);
+      // Serial.print("\t");
+      // Serial.print(Cosmo_rads_per_s);
+      // Serial.print("\t");
+      // Serial.print(Wanda_desired_speed);
+      // Serial.print("\t");
+      // Serial.print(Wanda_rads_per_s);
+      // Serial.print("\t");
+      // Serial.print(Wanda_desired_speed);
+      // Serial.print("\t");
+       
+      break;
+
+    
+
+    case IDLE_FREEZE:
+      digitalWrite(LED_PIN, HIGH); // Turns the LED back on. 
+      Cosmo_desired_speed = (Cosmo_freeze - Cosmo_Count) / counts_over_radians; // The desired speed should be 0, but if the wheels have spun, spin them back. 
+      Wanda_desired_speed = (Wanda_freeze - Wanda_Count) / counts_over_radians;
+
+      Cosmo_freeze_speed_error = Cosmo_desired_speed - Cosmo_rads_per_s; // Gets the error between the desired speed (0) and the current speed.
+      Wanda_freeze_speed_error = Cosmo_desired_speed - Wanda_rads_per_s;
+
+      Cosmo_Voltage = (Kp_freeze*Cosmo_freeze_speed_error) + Cosmo_freeze_Int; // Sets the voltage with PI (the I is set later)
+      Wanda_Voltage = (Kp_freeze*Wanda_freeze_speed_error) + Wanda_freeze_Int;
+
+      Timmy_Status = IDLE_FREEZE;
+      break; 
+
+
+
+    case FREEZE_CHECK:
+      digitalWrite(LED_PIN, HIGH);
+      digitalWrite(Wheel_Enable_Pin, HIGH);
+      Cosmo_desired_speed = (Cosmo_freeze - Cosmo_Count) / counts_over_radians; // This and next 5 lines make it stay still where it is, hopefully. 
+      Wanda_desired_speed = (Wanda_freeze - Wanda_Count) / counts_over_radians;
+      Cosmo_freeze_speed_error = Cosmo_desired_speed - Cosmo_rads_per_s; 
+      Wanda_freeze_speed_error = Wanda_desired_speed - Wanda_rads_per_s;
+      Cosmo_Voltage = (Kp_freeze*Cosmo_freeze_speed_error) + Cosmo_freeze_Int; 
+      Wanda_Voltage = (Kp_freeze*Wanda_freeze_speed_error) + Wanda_freeze_Int;
+
+      if ( lastState != FREEZE_CHECK ) { // if we just came from another state, start the timer. 
+        freeze_start_time = current_time;
+        spin_detect_scalar = 1.000;
+        //lastState = FREEZE_CHECK;
+      }
+      if ( ( lastState == SPIN_DETECT ) && ( current_time < (freeze_start_time + 500) ) ) {
+        lastState = FREEZE_CHECK;
+        break;
+      }
+      lastState = FREEZE_CHECK; // FIXME NEW CODE: this was in here before, but i don't know if it made a difference.
+      if ( ( current_time > (freeze_start_time + 500) ) && ( arucoDetected == 1) ) { // FIXME NEW CODE: ADDED ARUCODETECTED == 1 // ( current_time > (freeze_start_time + 3000) ) && 
+        
+        if ( abs(arucoAngle) > 0.090 ) { // if the rpi is sending a reasonably large angle,
+          Timmy_Status = SPIN_SETUP; // go to spin setup next. 
+        }
+        else { // if we've spun far enough, 
+          if ( arucoDistance > (desired_distance + 0.01) ) { // if the rpi is sending an out-of-range distance,
+             // Serial.println(arucoDistance - 0.350);
+            Timmy_Status = DRIVE_SETUP; //FIXME NEW CODE: reformatted slightly
+            lastState = FREEZE_CHECK;
+          }
+          else { // otherwise, we are both close enough and facing the correct direction. start the circle. 
+            Timmy_Status = CIRCLE_SPIN_SETUP; // change thiis to idle_freeze FROM CIRCLE_SPIN_SETUP
+            lastState = FREEZE_CHECK;
+          }
+        }
+      }
+      else if ( ( current_time > (freeze_start_time + 3000) )  ) { // FIXME NEW CODE: if you don't detect, but you're here, go back. all of this is new!!! took out 
+          spin_detect_scalar = spin_detect_scalar * (0.900) * (lastDetectedAngle / abs(lastDetectedAngle)); // turns in the direction of the last detected angle.
+          Timmy_Status = SPIN_DETECT;
+      }
+      break;
+  }
+  
+  // Serial.println(Timmy_Status);
+
+
+
+
+  if (Cosmo_Voltage>0) { digitalWrite(Cosmo_Direction_Pin,LOW); } else { digitalWrite(Cosmo_Direction_Pin,HIGH); } // Set the directions of the wheels. 
+  if (Wanda_Voltage>0) { digitalWrite(Wanda_Direction_Pin,LOW); } else { digitalWrite(Wanda_Direction_Pin,HIGH); }
+
+  Cosmo_PWM = (255*abs(Cosmo_Voltage))/Battery_Voltage;  // Set the requested voltage to the PWM. 
+  Wanda_PWM = (255*abs(Wanda_Voltage))/Battery_Voltage;
+  
+  analogWrite(Cosmo_PWM_Pin, min(Cosmo_PWM, 255)); // Write the voltage to the wheels, with a max of 255 PWM. 
+  analogWrite(Wanda_PWM_Pin, min(Wanda_PWM, 255));
+
+  current_time = millis();
+  if ((current_time - last_time_ms) > desired_Ts_ms) { // Sample every sample length. 
+    time_since_last_sample = (current_time - last_time_ms);
+
+    Wanda_rads_per_s = ((1000 * (Wanda_Count - Wanda_LastSampleCount) / (time_since_last_sample) ) / counts_over_radians); // Gets current speeds. 
+    Cosmo_rads_per_s = ((1000 * (Cosmo_Count - Cosmo_LastSampleCount) / (time_since_last_sample) ) / counts_over_radians); 
+
+    x_pos = x_old + wheel_radius*((cos(theta_pos_old)) * (((Wanda_Count - Wanda_LastSampleCount)+(Cosmo_Count - Cosmo_LastSampleCount))) / (counts_over_radians * 2)); // Gets current x, y, and theta
+    y_pos = y_old + wheel_radius*((sin(theta_pos_old)) * (((Wanda_Count - Wanda_LastSampleCount)+(Cosmo_Count - Cosmo_LastSampleCount))) / (counts_over_radians * 2));
+    theta_pos_current = theta_pos_old + ( ( wheel_radius * ( (Cosmo_Count - Cosmo_LastSampleCount) - (Wanda_Count - Wanda_LastSampleCount) ) ) / ( counts_over_radians * b ) ); 
+
+    x_old = x_pos; // Resets "old" variables.
+    y_old = y_pos;
+    theta_pos_old = theta_pos_current; 
+    Wanda_LastSampleCount = Wanda_Count;
+    Cosmo_LastSampleCount = Cosmo_Count;
+    last_time_ms = millis();
+    
+    if ( Timmy_Status == SPIN ) { // SPIN-SPECIFIC SAMPLE CODE:
+      theta_speed_current = (wheel_radius * ( Cosmo_rads_per_s - Wanda_rads_per_s ) ) / b; // Gets current spin speed.
+      Wanda_Spin_Int += Ki_spin*Wanda_spin_error; // Updates the integral portions of the spin speed. 
+      Cosmo_Spin_Int += Ki_spin*Cosmo_spin_error;
+    }
+
+    if ( Timmy_Status == DRIVE ) { // DRIVE-SPECIFIC SAMPLE CODE:
+      pos_speed_current = (wheel_radius * (Cosmo_rads_per_s + Wanda_rads_per_s)) / 2; // Gets current drive speed. 
+      Cosmo_pos_Int += Ki_pos*Cosmo_pos_speed_error; // Updates the integral portions of the drive speed. 
+      Wanda_pos_Int += Ki_pos*Wanda_pos_speed_error;
+      Kd = 0.991 * Kd; // Updated the "D" portion of the drive speed. 
+    }
+
+    if ( Timmy_Status == CIRCLE ) { // CIRCLE-SPECIFIC SAMPLE CODE:
+      circle_speed_current = (wheel_radius * ( Cosmo_rads_per_s - Wanda_rads_per_s ) ) / b;
+      Cosmo_circle_Int += Ki_circle * Cosmo_circle_error;
+      Wanda_circle_Int += Ki_circle * Wanda_circle_error; 
+    }
+
+    if ( ( Timmy_Status == IDLE_FREEZE) || ( Timmy_Status == FREEZE_CHECKANGLE) || ( Timmy_Status == FREEZE_CHECKDIST ) ) { // FREEZE-SPECIFIC SAMPLE CODE
+      Cosmo_freeze_Int += Ki_freeze * Cosmo_freeze_speed_error; // Updates the integral portions of the freeze speed. 
+      Wanda_freeze_Int += Ki_freeze * Wanda_freeze_speed_error;
+    }
+  }
+}
+
+// void receiveData(int byteCount) {
+//   while (Wire.available()) { //FIXME: THIS IS UNTESTED
+//     rpi_detect = Wire.read(); // receive byte as an integer
+// //    Serial.println(COMPVISION_INPUTPOS);   // print the integer
+//   }
+// }
+
+void Cosmo_ISR() { // if the CLK value changes,
+  Cosmo_ClkStatus = digitalRead(Cosmo_EncoderClk_Pin); // Read in both pins. 
+  Cosmo_DtStatus = digitalRead(Cosmo_EncoderDt_Pin);
+  if (Cosmo_ClkStatus != Cosmo_LastClk_Status) { // (Sometimes the ISR triggers on accident. This stops that.)
+    Cosmo_LastClk_Status = Cosmo_ClkStatus; // Sets the value for the last status, for next time. 
+    if (Cosmo_DtStatus == Cosmo_ClkStatus) { Cosmo_Count = Cosmo_Count + 2; } // If CLK changed which thus made Clk and Dt the same, that means the encoder turned FORWARD FOR COSMO. 
+    else { Cosmo_Count = Cosmo_Count - 2; } // Otherwise, that means the encoder turned BACKWARD FOR COSMO.
+  } 
+}
+void Wanda_ISR() { // See above comments. 
+  Wanda_ClkStatus = digitalRead(Wanda_EncoderClk_Pin); 
+  Wanda_DtStatus = digitalRead(Wanda_EncoderDt_Pin);
+  if (Wanda_ClkStatus != Wanda_LastClk_Status) { 
+    Wanda_LastClk_Status = Wanda_ClkStatus; 
+    if (Wanda_DtStatus == Wanda_ClkStatus) { Wanda_Count = Wanda_Count - 2; }  // If CLK changed which thus made Clk and Dt the same, that means the encoder turned BACKWARD FOR WANDA. 
+    else { Wanda_Count = Wanda_Count + 2; } // Otherwise, that means the encoder turned FORWARD FOR WANDA.
+  } 
+}
