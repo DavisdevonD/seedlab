@@ -1,0 +1,3 @@
+For this demo a circuct of markers is set up and must me navigated around. 
+The cv ode was modified to send the position and angle of the left most marker.
+The Arduio code has added states fpr navigation
