@@ -1,0 +1,175 @@
+import numpy as np
+import cv2
+from cv2 import aruco
+from smbus2 import SMBus
+import board
+import adafruit_character_lcd.character_lcd_rgb_i2c as character_lcd
+import time
+import serial
+import os
+
+#Serial Setup
+arduinoSerial = None
+try:
+        arduinoSerial = serial.Serial('/dev/ttyACM0', 115200, timeout=1)
+except:
+        try:
+                arduinoSerial = serial.Serial('/dev/ttyACM1', 115200, timeout=1)
+        except:
+                print("ERROR: NO ARDUINO DETECTED")
+
+
+# Setup LCD
+#i2c = board.I2C()
+#lcd_columns = 16
+#lcd_rows = 2
+#lcd = character_lcd.Character_LCD_RGB_I2C(i2c, lcd_columns, lcd_rows)
+#lcd.clear()
+#lcd.color = [100, 0, 0]
+
+# Initialize the I2C bus
+bus = SMBus(1)
+
+# Initialize camera
+camera = cv2.VideoCapture(0)
+aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_6X6_50)
+parameters = aruco.DetectorParameters()
+
+#camera peramitors
+camheight = 480
+camwidth = 640
+
+#Camera calibration parameters
+camera_matrix = np.array([
+    [696.60116847, 0., 319.31033473],
+    [0., 687.99533989, 230.2589402],
+    [0., 0., 1.]
+])
+
+focallength = np.mean([camera_matrix[0,0], camera_matrix[1,1]]) #get the average between the 2 measured focal lengths.
+
+arucowidth_measured = 10 #INSERT MEASURED ARUCO MARKER AREA HERE.
+
+distortion_coefficients = np.array([
+    [0.135991248, -1.56893039, -0.00398319590, -0.00302087220, 6.21144462]
+])
+
+#finds center of marker
+def find_center_of_corner(corner):
+	for vector in corner:
+		xavg = (vector[0, 0] + vector[1, 0] + vector[2, 0] + vector[3, 0])/4.0
+		yavg = (vector[0, 1] + vector[1, 1] + vector[2, 1] + vector[3, 1])/4.0
+		#print("X: ", xavg, " Y: ", yavg)
+		return [xavg, yavg]
+
+
+def find_area_of_aruco(corners):
+    ymin = np.min(corners[0][:, 1])
+    ymax = np.max(corners[0][:, 1])
+    width = xmax - xmin
+    height = ymax - ymin
+    area = width * height
+    #print (area)
+    return area	
+
+
+#code left from prior itteration to communicat with arduino
+def send_int_to_arduino(value):
+    ARDUINO_ADDRESS = 0x04  # Address set for Arduino
+    try:
+        bus.write_byte(ARDUINO_ADDRESS, value)
+        print(f"Sent {value} to Arduino")
+    except Exception as e:
+        print(f"Error sending {value} to Arduino: {e}")
+
+def send_float_to_arduino(value):
+    ARDUINO_ADDRESS = 0x04
+
+
+
+while True:
+    ret, image = camera.read() # reads image from camera
+
+    if ret:
+        # Applying camera calibration
+        image = cv2.undistort(image, camera_matrix, distortion_coefficients)
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        corners, ids, rejected = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+        image = aruco.drawDetectedMarkers(image.copy(), corners, ids)
+
+	# finds center of deteted marker
+        minId = 0
+        if corners:
+            curIndex = 0
+            minIndex = 0
+            minCenter = [999,0]
+            for corner in corners:
+                center = find_center_of_corner(corner)
+                if (center[0] < minCenter[0]):
+                     minCenter = center
+                     minIndex = curIndex
+                curIndex += 1
+            minId = ids[minIndex] 
+            #print(str(minId) + " " + str(minCenter))
+            minId = minId[0]   
+                
+        
+                
+            os.system("PAUSE")
+            center = minCenter
+            cv2.circle(image, (int(center[0]), int(center[1])), 4, (0, 0, 255), -1)  # draw center
+            #cv2.imshow('image', image)
+            deviation = center[0] - (camwidth/2)
+            angle_rad = np.arctan2(deviation, camwidth)
+            angle_deg = np.degrees(angle_rad)
+			
+            # arucoDistance = (arucoarea_measured * focallength) / find_area_of_aruco(corners[0])
+
+            vec, tvec, _ = aruco.estimatePoseSingleMarkers(corners, arucowidth_measured, camera_matrix, distortion_coefficients)
+
+            if tvec is not None:
+                    arucoDistance = np.linalg.norm(tvec[0])
+            else:
+                    arucoDistance = -1
+            
+            z_val = vec[0][0][2] #gets the markers z value 
+            #print("distance = ", arucoDistance) #prints the z value 
+            			
+            #print(f"Angle: {angle_deg:.2f} degrees")
+
+            arucoDetected = str(minId) + ", "
+            arucoDistanceString = "{:.5f}, ".format(arucoDistance)
+            arucoAngleString = "{:.5f}\n".format(angle_rad)
+            datString = arucoDetected + arucoDistanceString + arucoAngleString
+            #print(datString)
+            arduinoSerial.write(datString.encode('ascii'))
+            #arduinoSerial.write(arucoDetected.encode('ascii')+b'\n')
+        else:
+            arucoDetected = "0, "
+            arucoDistanceString = "0.00000, "
+            arucoAngleString = "0.00000\n"
+            datString = arucoDetected + arucoDistanceString + arucoAngleString
+            #print(datString)
+            arduinoSerial.write(datString.encode('ascii'))
+            #arduinoSerial.write(arucoDetected.encode('ascii')+b'\n')
+            #arduinoSerial.write(arucoDistanceString.encode('ascii')+b'\n')
+            #arduinoSerial.write(arucoAngleString.encode('ascii')+b'\n')
+                    
+
+
+            #send_int_to_arduino(arucoDistance*10000)
+            #send_int_to_arduino(angle_rad*10000)  # Uncomment to send data to Arduino
+			#lcd.clear()
+            #lcd.message = f"Angle: {angle_deg:.2f} deg"
+        #else:
+        #    send_int_to_arduino(-999)
+        #cv2.imshow("Image", image)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    else:
+        print("ERROR, CAMERA FEED FAILED")
+        quit()
+
+camera.release()
+cv2.destroyAllWindows()
